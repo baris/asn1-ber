@@ -2,6 +2,7 @@ package ber
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"reflect"
@@ -226,6 +227,9 @@ func ReadPacket(reader io.Reader) (*Packet, error) {
 	}
 
 	p := DecodePacket(buf)
+	if p == nil {
+		return nil, errors.New("Failed to decode a BER packet")
+	}
 	return p, nil
 }
 
@@ -271,22 +275,36 @@ func decodePacket(data []byte) (*Packet, []byte) {
 	if Debug {
 		fmt.Printf("decodePacket: enter %d\n", len(data))
 	}
+
+	if len(data) < 2 {
+		return nil, data
+	}
+
 	p := new(Packet)
 	p.ClassType = data[0] & ClassBitmask
 	p.TagType = data[0] & TypeBitmask
 	p.Tag = data[0] & TagBitmask
 
-	datalen := DecodeInteger(data[1:2])
-	datapos := uint64(2)
+	datalen := int(DecodeInteger(data[1:2]))
+	datapos := 2
 	if datalen&128 != 0 {
 		datalen -= 128
+
+		if len(data) < 2+datalen {
+			return nil, data
+		}
+
 		datapos += datalen
-		datalen = DecodeInteger(data[2 : 2+datalen])
+		datalen = int(DecodeInteger(data[2 : 2+datalen]))
 	}
 
 	p.Data = new(bytes.Buffer)
 	p.Children = make([]*Packet, 0, 2)
 	p.Value = nil
+
+	if len(data) < datapos+datalen {
+		return nil, data
+	}
 
 	value_data := data[datapos : datapos+datalen]
 
@@ -294,10 +312,13 @@ func decodePacket(data []byte) (*Packet, []byte) {
 		for len(value_data) != 0 {
 			var child *Packet
 			child, value_data = decodePacket(value_data)
+			if child == nil {
+				return nil, data
+			}
 			p.AppendChild(child)
 		}
 	} else if p.ClassType == ClassUniversal {
-		p.Data.Write(data[datapos : datapos+datalen])
+		p.Data.Write(value_data)
 		switch p.Tag {
 		case TagEOC:
 		case TagBoolean:
@@ -336,7 +357,7 @@ func decodePacket(data []byte) (*Packet, []byte) {
 		case TagBMPString:
 		}
 	} else {
-		p.Data.Write(data[datapos : datapos+datalen])
+		p.Data.Write(value_data)
 	}
 
 	return p, data[datapos+datalen:]
